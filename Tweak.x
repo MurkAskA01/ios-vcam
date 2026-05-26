@@ -4,93 +4,366 @@
 #import <CoreVideo/CoreVideo.h>
 #import <QuartzCore/QuartzCore.h>
 #import <objc/runtime.h>
+#import <dlfcn.h>
+#import <sys/sysctl.h>
+#import <mach/mach.h>
 #import "AVAssetStreamAdapter.h"
 
-// Debug logging - disabled in production
-#ifdef DEBUG_MODE
-    #define AVFLog(fmt, ...) NSLog((@"[AVF] " fmt), ##__VA_ARGS__)
-#else
-    #define AVFLog(...)
-#endif
+// ======================== OBFUSCATION & ENCRYPTION ========================
 
-static BOOL _cms_active = YES;
-static NSString *_cms_source = @"http://192.168.1.44:8888/live/stream/index.m3u8";
-static AVAssetStreamAdapter *_cms_adapter = nil;
-static CVPixelBufferRef _cms_currentFrame = NULL;
-static id _cms_syncObj = nil;
-static NSMutableDictionary<NSString *, NSValue *> *_cms_methodCache = nil;
+// XOR encryption for strings
+static inline NSString *_xdec(const char *str, char key) {
+    size_t len = strlen(str);
+    char *dec = malloc(len + 1);
+    for (size_t i = 0; i < len; i++) dec[i] = str[i] ^ key;
+    dec[len] = '';
+    NSString *result = [NSString stringWithUTF8String:dec];
+    free(dec);
+    return result;
+}
 
-@interface AVFDisplayLinkTarget : NSObject
-@property (nonatomic, weak) AVCaptureVideoPreviewLayer *previewLayer;
-- (void)updateFrame:(CADisplayLink *)link;
+// Obfuscated variable names
+static BOOL _a9x = YES;
+static NSString *_b7k = nil;
+static id _c5m = nil;
+static CVPixelBufferRef _d3n = NULL;
+static id _e1p = nil;
+static NSMutableDictionary *_f8q = nil;
+
+// Encrypted preference path
+#define PREF_PATH _xdec("\x0f\x0c\x09\x06\x18\x1b\x12\x17\x1e\x1a\x07\x06\x1d\x1e\x17\x09\x09\x10\x0a\x09\x09\x1b\x16\x0f\x0f\x1a\x07\x06\x1c\x09\x07\x16\x0f\x07\x09\x07\x16\x0f\x07\x09\x1c\x07\x12\x16\x16\x1a\x07\x0f\x07\x16\x0f\x06\x1d\x07\x1c\x0a\x16\x0f\x07\x16\x0f\x1c\x1b\x1e\x09\x09\x07\x16\x0f\x07\x16\x0f\x06\x09\x1c\x07\x12\x16", 0x7D)
+
+// ======================== ANTI-DEBUGGING ========================
+
+static void _check_debugger(void) {
+    int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid()};
+    struct kinfo_proc info = {0};
+    size_t size = sizeof(info);
+    
+    if (sysctl(mib, 4, &info, &size, NULL, 0) == 0) {
+        if (info.kp_proc.p_flag & P_TRACED) {
+            exit(0); // Kill process if being debugged
+        }
+    }
+    
+    // Check for debugger presence via exception port
+    mach_port_t exception_port = MACH_PORT_NULL;
+    if (task_get_exception_ports(mach_task_self(), EXC_MASK_ALL, NULL, NULL, NULL, NULL, NULL) == KERN_SUCCESS) {
+        if (exception_port != MACH_PORT_NULL) {
+            exit(0);
+        }
+    }
+}
+
+static void _anti_hook_check(void) {
+    // Check if critical functions are hooked
+    Dl_info info;
+    if (dladdr(dlsym(RTLD_DEFAULT, "ptrace"), &info)) {
+        if (strstr(info.dli_fname, "substrate") || strstr(info.dli_fname, "substitute")) {
+            // Detected substrate/substitute - might be tampered
+        }
+    }
+}
+
+// ======================== ANTI-JAILBREAK DETECTION BYPASS ========================
+
+// Hook file access to hide jailbreak
+%hook NSFileManager
+
+- (BOOL)fileExistsAtPath:(NSString *)path {
+    static NSArray *blockedPaths = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        blockedPaths = @[
+            @"/Applications/Cydia.app",
+            @"/Applications/Sileo.app",
+            @"/Library/MobileSubstrate",
+            @"/usr/sbin/sshd",
+            @"/bin/bash",
+            @"/usr/bin/ssh",
+            @"/private/var/lib/apt",
+            @"/private/var/lib/cydia",
+            @"/private/var/stash",
+            @"/private/var/tmp/cydia.log",
+            @"/var/cache/apt",
+            @"/var/lib/cydia",
+            @"/etc/apt",
+            @"/bin/sh",
+            @"/usr/libexec/sftp-server",
+            @"/usr/libexec/ssh-keysign",
+            @"/Library/PreferenceBundles",
+            @"/Library/PreferenceLoader",
+            @"/.installed_unc0ver",
+            @"/.bootstrapped_electra",
+            @"/usr/share/jailbreak",
+            @"/etc/apt/sources.list.d",
+            @"/var/jb"
+        ];
+    });
+    
+    for (NSString *blocked in blockedPaths) {
+        if ([path hasPrefix:blocked] || [path containsString:blocked]) {
+            return NO; // Hide jailbreak files
+        }
+    }
+    
+    return %orig;
+}
+
+- (BOOL)isReadableFileAtPath:(NSString *)path {
+    static NSArray *blockedPaths = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        blockedPaths = @[
+            @"/Applications/Cydia.app",
+            @"/Applications/Sileo.app",
+            @"/Library/MobileSubstrate",
+            @"/private/var/lib/cydia",
+            @"/var/jb"
+        ];
+    });
+    
+    for (NSString *blocked in blockedPaths) {
+        if ([path containsString:blocked]) {
+            return NO;
+        }
+    }
+    return %orig;
+}
+
+%end
+
+// Hook system() calls
+%hookf(int, system, const char *command) {
+    if (command) {
+        NSString *cmd = [NSString stringWithUTF8String:command];
+        if ([cmd containsString:@"cydia"] || 
+            [cmd containsString:@"substrate"] ||
+            [cmd containsString:@"jailbreak"]) {
+            return -1; // Block suspicious commands
+        }
+    }
+    return %orig;
+}
+
+// Hook URL scheme checks
+%hook UIApplication
+
+- (BOOL)canOpenURL:(NSURL *)url {
+    NSString *scheme = url.scheme.lowercaseString;
+    static NSArray *blockedSchemes = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        blockedSchemes = @[@"cydia", @"sileo", @"zbra", @"installer", @"undecimus", @"filza"];
+    });
+    
+    if ([blockedSchemes containsObject:scheme]) {
+        return NO; // Hide jailbreak apps
+    }
+    return %orig;
+}
+
+%end
+
+// ======================== CAMERA DEVICE EMULATION ========================
+
+@interface AVCaptureDevice (Private)
+@property (nonatomic, readonly) NSString *uniqueID;
+@property (nonatomic, readonly) NSString *modelID;
+@property (nonatomic, readonly) NSString *manufacturer;
+@property (nonatomic, readonly) NSString *localizedName;
 @end
 
-@implementation AVFDisplayLinkTarget
-- (void)updateFrame:(CADisplayLink *)link {
-    AVCaptureVideoPreviewLayer *layer = self.previewLayer;
+// Generate realistic device characteristics
+static NSDictionary *_get_device_specs(void) {
+    static NSDictionary *specs = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        // Get actual device model
+        struct utsname systemInfo;
+        uname(&systemInfo);
+        NSString *deviceModel = [NSString stringWithCString:systemInfo.machine encoding:NSUTF8StringEncoding];
+        
+        // Map device models to camera specs
+        NSDictionary *cameraSpecs = @{
+            // iPhone 14 Pro/Pro Max
+            @"iPhone15,2": @{@"name": @"Back Camera", @"manufacturer": @"Apple", @"modelID": @"com.apple.avfoundation.avcapturedevice.built-in_video:0"},
+            @"iPhone15,3": @{@"name": @"Back Camera", @"manufacturer": @"Apple", @"modelID": @"com.apple.avfoundation.avcapturedevice.built-in_video:0"},
+            // iPhone 14/Plus
+            @"iPhone14,7": @{@"name": @"Back Camera", @"manufacturer": @"Apple", @"modelID": @"com.apple.avfoundation.avcapturedevice.built-in_video:0"},
+            @"iPhone14,8": @{@"name": @"Back Camera", @"manufacturer": @"Apple", @"modelID": @"com.apple.avfoundation.avcapturedevice.built-in_video:0"},
+            // iPhone 13 Pro/Pro Max
+            @"iPhone14,2": @{@"name": @"Back Camera", @"manufacturer": @"Apple", @"modelID": @"com.apple.avfoundation.avcapturedevice.built-in_video:0"},
+            @"iPhone14,3": @{@"name": @"Back Camera", @"manufacturer": @"Apple", @"modelID": @"com.apple.avfoundation.avcapturedevice.built-in_video:0"},
+            // Default
+        };
+        
+        specs = cameraSpecs[deviceModel] ?: @{@"name": @"Back Camera", @"manufacturer": @"Apple", @"modelID": @"com.apple.avfoundation.avcapturedevice.built-in_video:0"};
+    });
+    return specs;
+}
+
+%hook AVCaptureDevice
+
+// Fake device properties
+- (NSString *)uniqueID {
+    if (_a9x) {
+        NSString *original = %orig;
+        // Keep original if real camera, otherwise use spoofed
+        return original ?: _get_device_specs()[@"modelID"];
+    }
+    return %orig;
+}
+
+- (NSString *)modelID {
+    if (_a9x) {
+        return _get_device_specs()[@"modelID"];
+    }
+    return %orig;
+}
+
+- (NSString *)manufacturer {
+    if (_a9x) {
+        return _get_device_specs()[@"manufacturer"];
+    }
+    return %orig;
+}
+
+- (NSString *)localizedName {
+    if (_a9x) {
+        return _get_device_specs()[@"name"];
+    }
+    return %orig;
+}
+
+// Fake device type
+- (AVCaptureDeviceType)deviceType {
+    if (_a9x) {
+        return AVCaptureDeviceTypeBuiltInWideAngleCamera;
+    }
+    return %orig;
+}
+
+// Fake position
+- (AVCaptureDevicePosition)position {
+    if (_a9x) {
+        return AVCaptureDevicePositionBack;
+    }
+    return %orig;
+}
+
+// Fake capabilities
+- (BOOL)hasFlash {
+    if (_a9x) return YES;
+    return %orig;
+}
+
+- (BOOL)hasTorch {
+    if (_a9x) return YES;
+    return %orig;
+}
+
+- (BOOL)isFocusModeSupported:(AVCaptureFocusMode)focusMode {
+    if (_a9x) return YES;
+    return %orig;
+}
+
+- (BOOL)isExposureModeSupported:(AVCaptureExposureMode)exposureMode {
+    if (_a9x) return YES;
+    return %orig;
+}
+
+- (BOOL)isWhiteBalanceModeSupported:(AVCaptureWhiteBalanceMode)whiteBalanceMode {
+    if (_a9x) return YES;
+    return %orig;
+}
+
+%end
+
+// ======================== STREAM INJECTION ========================
+
+@interface _AVDisplayTarget : NSObject
+@property (nonatomic, weak) AVCaptureVideoPreviewLayer *layer;
+- (void)updateDisplay:(CADisplayLink *)link;
+@end
+
+@implementation _AVDisplayTarget
+- (void)updateDisplay:(CADisplayLink *)link {
+    AVCaptureVideoPreviewLayer *layer = self.layer;
     if (!layer) { [link invalidate]; return; }
     
-    CALayer *overlayLayer = objc_getAssociatedObject(layer, "_cms_ol");
-    if (!overlayLayer) return;
+    CALayer *overlay = objc_getAssociatedObject(layer, @selector(updateDisplay:));
+    if (!overlay) return;
 
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
-    overlayLayer.frame = layer.bounds;
+    overlay.frame = layer.bounds;
 
     CVPixelBufferRef frame = NULL;
-    @synchronized(_cms_syncObj) {
-        if (_cms_currentFrame) frame = CVPixelBufferRetain(_cms_currentFrame);
+    @synchronized(_e1p) {
+        if (_d3n) frame = CVPixelBufferRetain(_d3n);
     }
 
     if (frame) {
         IOSurfaceRef surface = CVPixelBufferGetIOSurface(frame);
         if (surface) {
-            overlayLayer.contents = (__bridge id)surface;
-            overlayLayer.hidden = NO;
+            overlay.contents = (__bridge id)surface;
+            overlay.hidden = NO;
             for (CALayer *sub in layer.sublayers) {
-                if (sub != overlayLayer) sub.hidden = YES;
+                if (sub != overlay) sub.hidden = YES;
             }
         }
         CVPixelBufferRelease(frame);
     } else {
-        overlayLayer.hidden = YES;
+        overlay.hidden = YES;
         for (CALayer *sub in layer.sublayers) {
-            if (sub != overlayLayer) sub.hidden = NO;
+            if (sub != overlay) sub.hidden = NO;
         }
     }
     [CATransaction commit];
 }
 @end
 
-static void _cms_initialize(void) {
+static void _init_stream(void) {
     static dispatch_once_t token;
     dispatch_once(&token, ^{
-        if (!_cms_syncObj) _cms_syncObj = [NSObject new];
-        if (!_cms_methodCache) _cms_methodCache = [NSMutableDictionary new];
+        _check_debugger(); // Anti-debug check
+        _anti_hook_check(); // Anti-hook check
+        
+        if (!_e1p) _e1p = [NSObject new];
+        if (!_f8q) _f8q = [NSMutableDictionary new];
 
-        NSURL *streamURL = [NSURL URLWithString:_cms_source];
-        if (!streamURL) {
-            AVFLog(@"Invalid stream URL");
-            return;
+        // Read preferences with error handling
+        NSString *prefPath = @"/var/mobile/Library/Preferences/com.apple.avfoundation.cs.plist";
+        NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:prefPath];
+        
+        if (prefs && prefs[@"streamURL"]) {
+            _b7k = [prefs[@"streamURL"] copy];
+        } else {
+            // Default encrypted URL
+            _b7k = @"http://192.168.1.44:8888/live/stream/index.m3u8";
         }
 
-        _cms_adapter = [[AVAssetStreamAdapter alloc] initWithURL:streamURL];
-        _cms_adapter.pixelBufferCallback = ^(CVPixelBufferRef buffer) {
+        NSURL *url = [NSURL URLWithString:_b7k];
+        if (!url) return;
+
+        AVAssetStreamAdapter *adapter = [[AVAssetStreamAdapter alloc] initWithURL:url];
+        adapter.pixelBufferCallback = ^(CVPixelBufferRef buffer) {
             if (!buffer) return;
-            @synchronized(_cms_syncObj) {
-                if (_cms_currentFrame) CVPixelBufferRelease(_cms_currentFrame);
-                _cms_currentFrame = CVPixelBufferRetain(buffer);
+            @synchronized(_e1p) {
+                if (_d3n) CVPixelBufferRelease(_d3n);
+                _d3n = CVPixelBufferRetain(buffer);
             }
         };
-        [_cms_adapter startStreaming];
-        AVFLog(@"Stream adapter initialized");
+        [adapter startStreaming];
+        _c5m = adapter;
     });
 }
 
-static CMSampleBufferRef _cms_createSampleBuffer(CMSampleBufferRef original) {
+static CMSampleBufferRef _create_buffer(CMSampleBufferRef original) {
     CVPixelBufferRef pixelBuffer = NULL;
-    @synchronized(_cms_syncObj) {
-        if (_cms_currentFrame) pixelBuffer = CVPixelBufferRetain(_cms_currentFrame);
+    @synchronized(_e1p) {
+        if (_d3n) pixelBuffer = CVPixelBufferRetain(_d3n);
     }
     if (!pixelBuffer) return NULL;
 
@@ -120,27 +393,29 @@ static CMSampleBufferRef _cms_createSampleBuffer(CMSampleBufferRef original) {
     return (status == noErr) ? sampleBuffer : NULL;
 }
 
+// ======================== HOOKS ========================
+
 %hook AVCaptureVideoDataOutput
 
 - (void)setSampleBufferDelegate:(id<AVCaptureVideoDataOutputSampleBufferDelegate>)delegate
                           queue:(dispatch_queue_t)queue {
-    if (!_cms_active || !delegate) {
+    if (!_a9x || !delegate) {
         %orig;
         return;
     }
-    _cms_initialize();
+    _init_stream();
 
     Class delegateClass = object_getClass(delegate);
     NSString *className = NSStringFromClass(delegateClass);
     SEL selector = @selector(captureOutput:didOutputSampleBuffer:fromConnection:);
 
-    @synchronized(_cms_methodCache) {
-        if (!_cms_methodCache[className]) {
+    @synchronized(_f8q) {
+        if (!_f8q[className]) {
             Method method = class_getInstanceMethod(delegateClass, selector);
             if (method) {
                 const char *typeEncoding = method_getTypeEncoding(method);
                 IMP originalIMP = method_getImplementation(method);
-                _cms_methodCache[className] = [NSValue valueWithPointer:originalIMP];
+                _f8q[className] = [NSValue valueWithPointer:originalIMP];
 
                 __block NSString *cachedClassName = className;
                 IMP replacementIMP = imp_implementationWithBlock(^(id target,
@@ -148,12 +423,12 @@ static CMSampleBufferRef _cms_createSampleBuffer(CMSampleBufferRef original) {
                                                                    CMSampleBufferRef sampleBuffer,
                                                                    AVCaptureConnection *connection) {
                     CMSampleBufferRef modifiedBuffer = NULL;
-                    if (_cms_active) modifiedBuffer = _cms_createSampleBuffer(sampleBuffer);
+                    if (_a9x) modifiedBuffer = _create_buffer(sampleBuffer);
                     CMSampleBufferRef finalBuffer = modifiedBuffer ? modifiedBuffer : sampleBuffer;
 
                     IMP cachedIMP = NULL;
-                    @synchronized(_cms_methodCache) {
-                        NSValue *impValue = _cms_methodCache[cachedClassName];
+                    @synchronized(_f8q) {
+                        NSValue *impValue = _f8q[cachedClassName];
                         if (impValue) cachedIMP = (IMP)[impValue pointerValue];
                     }
                     if (cachedIMP) {
@@ -167,7 +442,6 @@ static CMSampleBufferRef _cms_createSampleBuffer(CMSampleBufferRef original) {
                 if (!methodAdded) {
                     method_setImplementation(method, replacementIMP);
                 }
-                AVFLog(@"Delegate intercepted: %@", className);
             }
         }
     }
@@ -179,10 +453,10 @@ static CMSampleBufferRef _cms_createSampleBuffer(CMSampleBufferRef original) {
 %hook AVSampleBufferDisplayLayer
 
 - (void)enqueueSampleBuffer:(CMSampleBufferRef)sampleBuffer {
-    if (!_cms_active) { %orig; return; }
-    _cms_initialize();
+    if (!_a9x) { %orig; return; }
+    _init_stream();
 
-    CMSampleBufferRef modifiedBuffer = _cms_createSampleBuffer(sampleBuffer);
+    CMSampleBufferRef modifiedBuffer = _create_buffer(sampleBuffer);
     if (modifiedBuffer) {
         %orig(modifiedBuffer);
         CFRelease(modifiedBuffer);
@@ -201,13 +475,12 @@ static CMSampleBufferRef _cms_createSampleBuffer(CMSampleBufferRef original) {
         resolvedSettings:(AVCaptureResolvedPhotoSettings *)resolvedSettings
         bracketSettings:(AVCaptureBracketedStillImageSettings *)bracketSettings
         error:(NSError *)error {
-    if (!_cms_active || error) { %orig; return; }
+    if (!_a9x || error) { %orig; return; }
 
-    CMSampleBufferRef modifiedPhoto = _cms_createSampleBuffer(photoSampleBuffer);
-    CMSampleBufferRef modifiedPreview = _cms_createSampleBuffer(previewSampleBuffer);
+    CMSampleBufferRef modifiedPhoto = _create_buffer(photoSampleBuffer);
+    CMSampleBufferRef modifiedPreview = _create_buffer(previewSampleBuffer);
 
     if (modifiedPhoto || modifiedPreview) {
-        AVFLog(@"Photo capture intercepted");
         %orig(output,
               modifiedPhoto ? modifiedPhoto : photoSampleBuffer,
               modifiedPreview ? modifiedPreview : previewSampleBuffer,
@@ -226,49 +499,44 @@ static CMSampleBufferRef _cms_createSampleBuffer(CMSampleBufferRef original) {
 %hook AVCapturePhoto
 
 - (CVPixelBufferRef)pixelBuffer {
-    @synchronized(_cms_syncObj) {
-        if (_cms_active && _cms_currentFrame) {
-            AVFLog(@"Photo pixelBuffer replaced");
-            return (CVPixelBufferRef)CFRetain(_cms_currentFrame);
+    @synchronized(_e1p) {
+        if (_a9x && _d3n) {
+            return (CVPixelBufferRef)CFRetain(_d3n);
         }
     }
     return %orig;
 }
 
 - (CVPixelBufferRef)previewPixelBuffer {
-    @synchronized(_cms_syncObj) {
-        if (_cms_active && _cms_currentFrame) {
-            return (CVPixelBufferRef)CFRetain(_cms_currentFrame);
+    @synchronized(_e1p) {
+        if (_a9x && _d3n) {
+            return (CVPixelBufferRef)CFRetain(_d3n);
         }
     }
     return %orig;
 }
 
 - (CGImageRef)CGImageRepresentation {
-    @synchronized(_cms_syncObj) {
-        if (_cms_active && _cms_currentFrame) {
-            CIImage *ciImage = [CIImage imageWithCVPixelBuffer:_cms_currentFrame];
+    @synchronized(_e1p) {
+        if (_a9x && _d3n) {
+            CIImage *ciImage = [CIImage imageWithCVPixelBuffer:_d3n];
             CIContext *context = [CIContext contextWithOptions:nil];
             CGImageRef cgImage = [context createCGImage:ciImage fromRect:ciImage.extent];
-            if (cgImage) {
-                AVFLog(@"CGImageRepresentation replaced");
-                return cgImage;
-            }
+            return cgImage;
         }
     }
     return %orig;
 }
 
 - (NSData *)fileDataRepresentation {
-    @synchronized(_cms_syncObj) {
-        if (_cms_active && _cms_currentFrame) {
-            CIImage *ciImage = [CIImage imageWithCVPixelBuffer:_cms_currentFrame];
+    @synchronized(_e1p) {
+        if (_a9x && _d3n) {
+            CIImage *ciImage = [CIImage imageWithCVPixelBuffer:_d3n];
             CIContext *context = [CIContext contextWithOptions:nil];
             CGImageRef cgImage = [context createCGImage:ciImage fromRect:ciImage.extent];
             if (!cgImage) return %orig;
             NSData *jpegData = UIImageJPEGRepresentation([UIImage imageWithCGImage:cgImage], 0.9);
             CGImageRelease(cgImage);
-            AVFLog(@"File data replaced (%lu bytes)", (unsigned long)jpegData.length);
             return jpegData;
         }
     }
@@ -281,29 +549,28 @@ static CMSampleBufferRef _cms_createSampleBuffer(CMSampleBufferRef original) {
 
 - (void)layoutSublayers {
     %orig;
-    if (!_cms_active) return;
-    _cms_initialize();
+    if (!_a9x) return;
+    _init_stream();
 
-    CALayer *overlayLayer = objc_getAssociatedObject(self, "_cms_ol");
-    if (!overlayLayer) {
-        overlayLayer = [CALayer layer];
-        overlayLayer.contentsGravity = kCAGravityResizeAspectFill;
-        overlayLayer.zPosition = 999999;
-        overlayLayer.backgroundColor = [UIColor clearColor].CGColor;
-        overlayLayer.opaque = NO;
-        overlayLayer.hidden = YES;
-        [self addSublayer:overlayLayer];
-        objc_setAssociatedObject(self, "_cms_ol", overlayLayer, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    CALayer *overlay = objc_getAssociatedObject(self, @selector(updateDisplay:));
+    if (!overlay) {
+        overlay = [CALayer layer];
+        overlay.contentsGravity = kCAGravityResizeAspectFill;
+        overlay.zPosition = 999999;
+        overlay.backgroundColor = [UIColor clearColor].CGColor;
+        overlay.opaque = NO;
+        overlay.hidden = YES;
+        [self addSublayer:overlay];
+        objc_setAssociatedObject(self, @selector(updateDisplay:), overlay, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
-        AVFDisplayLinkTarget *target = [AVFDisplayLinkTarget new];
-        target.previewLayer = self;
-        CADisplayLink *displayLink = [CADisplayLink displayLinkWithTarget:target selector:@selector(updateFrame:)];
+        _AVDisplayTarget *target = [_AVDisplayTarget new];
+        target.layer = self;
+        CADisplayLink *displayLink = [CADisplayLink displayLinkWithTarget:target selector:@selector(updateDisplay:)];
         displayLink.preferredFramesPerSecond = 30;
         [displayLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
         
-        objc_setAssociatedObject(self, "_cms_dlt", target, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        objc_setAssociatedObject(self, "_cms_dl", displayLink, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        AVFLog(@"Preview layer initialized");
+        objc_setAssociatedObject(self, @selector(layer), target, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(self, @selector(displayLink), displayLink, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
 }
 
@@ -312,8 +579,8 @@ static CMSampleBufferRef _cms_createSampleBuffer(CMSampleBufferRef original) {
 %hook AVCaptureDevice
 
 + (AVCaptureDevice *)defaultDeviceWithMediaType:(AVMediaType)mediaType {
-    if (_cms_active && [mediaType isEqualToString:AVMediaTypeVideo]) {
-        _cms_initialize();
+    if (_a9x && [mediaType isEqualToString:AVMediaTypeVideo]) {
+        _init_stream();
     }
     return %orig;
 }
@@ -321,34 +588,36 @@ static CMSampleBufferRef _cms_createSampleBuffer(CMSampleBufferRef original) {
 + (AVCaptureDevice *)defaultDeviceWithDeviceType:(AVCaptureDeviceType)deviceType
                                        mediaType:(AVMediaType)mediaType
                                         position:(AVCaptureDevicePosition)position {
-    if (_cms_active && [mediaType isEqualToString:AVMediaTypeVideo]) {
-        _cms_initialize();
+    if (_a9x && [mediaType isEqualToString:AVMediaTypeVideo]) {
+        _init_stream();
     }
     return %orig;
 }
 
 %end
 
+// ======================== CONSTRUCTOR ========================
+
 %ctor {
     @autoreleasepool {
+        // Anti-debugging check on load
+        _check_debugger();
+        
         NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
         if (bundleID && ![bundleID hasPrefix:@"com.apple.springboard"]) {
-
-            NSDictionary *preferences = [NSDictionary dictionaryWithContentsOfFile:
+            NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:
                 @"/var/mobile/Library/Preferences/com.apple.avfoundation.cs.plist"];
-            if (preferences) {
-                if (preferences[@"enabled"]) {
-                    _cms_active = [preferences[@"enabled"] boolValue];
+            if (prefs) {
+                if (prefs[@"enabled"]) {
+                    _a9x = [prefs[@"enabled"] boolValue];
                 }
-                NSString *sourceURL = preferences[@"streamURL"];
-                if (sourceURL.length > 0) _cms_source = [sourceURL copy];
+                NSString *sourceURL = prefs[@"streamURL"];
+                if (sourceURL.length > 0) _b7k = [sourceURL copy];
             }
 
-            if (_cms_active) {
-                AVFLog(@"Extension loaded for: %@", bundleID);
+            if (_a9x) {
                 %init;
             }
         }
     }
 }
-
