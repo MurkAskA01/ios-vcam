@@ -6,6 +6,7 @@
 #import <objc/runtime.h>
 #import <dlfcn.h>
 #import <sys/sysctl.h>
+#import <sys/utsname.h>
 #import <mach/mach.h>
 #import "AVAssetStreamAdapter.h"
 
@@ -30,9 +31,6 @@ static CVPixelBufferRef _d3n = NULL;
 static id _e1p = nil;
 static NSMutableDictionary *_f8q = nil;
 
-// Encrypted preference path
-#define PREF_PATH _xdec("\x0f\x0c\x09\x06\x18\x1b\x12\x17\x1e\x1a\x07\x06\x1d\x1e\x17\x09\x09\x10\x0a\x09\x09\x1b\x16\x0f\x0f\x1a\x07\x06\x1c\x09\x07\x16\x0f\x07\x09\x07\x16\x0f\x07\x09\x1c\x07\x12\x16\x16\x1a\x07\x0f\x07\x16\x0f\x06\x1d\x07\x1c\x0a\x16\x0f\x07\x16\x0f\x1c\x1b\x1e\x09\x09\x07\x16\x0f\x07\x16\x0f\x06\x09\x1c\x07\x12\x16", 0x7D)
-
 // ======================== ANTI-DEBUGGING ========================
 
 static void _check_debugger(void) {
@@ -42,11 +40,10 @@ static void _check_debugger(void) {
     
     if (sysctl(mib, 4, &info, &size, NULL, 0) == 0) {
         if (info.kp_proc.p_flag & P_TRACED) {
-            exit(0); // Kill process if being debugged
+            exit(0);
         }
     }
     
-    // Check for debugger presence via exception port
     mach_port_t exception_port = MACH_PORT_NULL;
     if (task_get_exception_ports(mach_task_self(), EXC_MASK_ALL, NULL, NULL, NULL, NULL, NULL) == KERN_SUCCESS) {
         if (exception_port != MACH_PORT_NULL) {
@@ -56,18 +53,16 @@ static void _check_debugger(void) {
 }
 
 static void _anti_hook_check(void) {
-    // Check if critical functions are hooked
     Dl_info info;
     if (dladdr(dlsym(RTLD_DEFAULT, "ptrace"), &info)) {
         if (strstr(info.dli_fname, "substrate") || strstr(info.dli_fname, "substitute")) {
-            // Detected substrate/substitute - might be tampered
+            // Detected substrate/substitute
         }
     }
 }
 
 // ======================== ANTI-JAILBREAK DETECTION BYPASS ========================
 
-// Hook file access to hide jailbreak
 %hook NSFileManager
 
 - (BOOL)fileExistsAtPath:(NSString *)path {
@@ -103,7 +98,7 @@ static void _anti_hook_check(void) {
     
     for (NSString *blocked in blockedPaths) {
         if ([path hasPrefix:blocked] || [path containsString:blocked]) {
-            return NO; // Hide jailbreak files
+            return NO;
         }
     }
     
@@ -133,20 +128,6 @@ static void _anti_hook_check(void) {
 
 %end
 
-// Hook system() calls
-%hookf(int, system, const char *command) {
-    if (command) {
-        NSString *cmd = [NSString stringWithUTF8String:command];
-        if ([cmd containsString:@"cydia"] || 
-            [cmd containsString:@"substrate"] ||
-            [cmd containsString:@"jailbreak"]) {
-            return -1; // Block suspicious commands
-        }
-    }
-    return %orig;
-}
-
-// Hook URL scheme checks
 %hook UIApplication
 
 - (BOOL)canOpenURL:(NSURL *)url {
@@ -158,7 +139,7 @@ static void _anti_hook_check(void) {
     });
     
     if ([blockedSchemes containsObject:scheme]) {
-        return NO; // Hide jailbreak apps
+        return NO;
     }
     return %orig;
 }
@@ -174,28 +155,21 @@ static void _anti_hook_check(void) {
 @property (nonatomic, readonly) NSString *localizedName;
 @end
 
-// Generate realistic device characteristics
 static NSDictionary *_get_device_specs(void) {
     static NSDictionary *specs = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        // Get actual device model
         struct utsname systemInfo;
         uname(&systemInfo);
         NSString *deviceModel = [NSString stringWithCString:systemInfo.machine encoding:NSUTF8StringEncoding];
         
-        // Map device models to camera specs
         NSDictionary *cameraSpecs = @{
-            // iPhone 14 Pro/Pro Max
             @"iPhone15,2": @{@"name": @"Back Camera", @"manufacturer": @"Apple", @"modelID": @"com.apple.avfoundation.avcapturedevice.built-in_video:0"},
             @"iPhone15,3": @{@"name": @"Back Camera", @"manufacturer": @"Apple", @"modelID": @"com.apple.avfoundation.avcapturedevice.built-in_video:0"},
-            // iPhone 14/Plus
             @"iPhone14,7": @{@"name": @"Back Camera", @"manufacturer": @"Apple", @"modelID": @"com.apple.avfoundation.avcapturedevice.built-in_video:0"},
             @"iPhone14,8": @{@"name": @"Back Camera", @"manufacturer": @"Apple", @"modelID": @"com.apple.avfoundation.avcapturedevice.built-in_video:0"},
-            // iPhone 13 Pro/Pro Max
             @"iPhone14,2": @{@"name": @"Back Camera", @"manufacturer": @"Apple", @"modelID": @"com.apple.avfoundation.avcapturedevice.built-in_video:0"},
             @"iPhone14,3": @{@"name": @"Back Camera", @"manufacturer": @"Apple", @"modelID": @"com.apple.avfoundation.avcapturedevice.built-in_video:0"},
-            // Default
         };
         
         specs = cameraSpecs[deviceModel] ?: @{@"name": @"Back Camera", @"manufacturer": @"Apple", @"modelID": @"com.apple.avfoundation.avcapturedevice.built-in_video:0"};
@@ -205,11 +179,9 @@ static NSDictionary *_get_device_specs(void) {
 
 %hook AVCaptureDevice
 
-// Fake device properties
 - (NSString *)uniqueID {
     if (_a9x) {
         NSString *original = %orig;
-        // Keep original if real camera, otherwise use spoofed
         return original ?: _get_device_specs()[@"modelID"];
     }
     return %orig;
@@ -236,7 +208,6 @@ static NSDictionary *_get_device_specs(void) {
     return %orig;
 }
 
-// Fake device type
 - (AVCaptureDeviceType)deviceType {
     if (_a9x) {
         return AVCaptureDeviceTypeBuiltInWideAngleCamera;
@@ -244,7 +215,6 @@ static NSDictionary *_get_device_specs(void) {
     return %orig;
 }
 
-// Fake position
 - (AVCaptureDevicePosition)position {
     if (_a9x) {
         return AVCaptureDevicePositionBack;
@@ -252,7 +222,6 @@ static NSDictionary *_get_device_specs(void) {
     return %orig;
 }
 
-// Fake capabilities
 - (BOOL)hasFlash {
     if (_a9x) return YES;
     return %orig;
@@ -327,20 +296,18 @@ static NSDictionary *_get_device_specs(void) {
 static void _init_stream(void) {
     static dispatch_once_t token;
     dispatch_once(&token, ^{
-        _check_debugger(); // Anti-debug check
-        _anti_hook_check(); // Anti-hook check
+        _check_debugger();
+        _anti_hook_check();
         
         if (!_e1p) _e1p = [NSObject new];
         if (!_f8q) _f8q = [NSMutableDictionary new];
 
-        // Read preferences with error handling
         NSString *prefPath = @"/var/mobile/Library/Preferences/com.apple.avfoundation.cs.plist";
         NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:prefPath];
         
         if (prefs && prefs[@"streamURL"]) {
             _b7k = [prefs[@"streamURL"] copy];
         } else {
-            // Default encrypted URL
             _b7k = @"http://192.168.1.44:8888/live/stream/index.m3u8";
         }
 
@@ -392,8 +359,6 @@ static CMSampleBufferRef _create_buffer(CMSampleBufferRef original) {
     CVPixelBufferRelease(pixelBuffer);
     return (status == noErr) ? sampleBuffer : NULL;
 }
-
-// ======================== HOOKS ========================
 
 %hook AVCaptureVideoDataOutput
 
@@ -596,11 +561,8 @@ static CMSampleBufferRef _create_buffer(CMSampleBufferRef original) {
 
 %end
 
-// ======================== CONSTRUCTOR ========================
-
 %ctor {
     @autoreleasepool {
-        // Anti-debugging check on load
         _check_debugger();
         
         NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
