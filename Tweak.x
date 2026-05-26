@@ -4,98 +4,99 @@
 #import <CoreVideo/CoreVideo.h>
 #import <QuartzCore/QuartzCore.h>
 #import <objc/runtime.h>
-#import "MJPEGStreamReader.h"
+#import "AVAssetStreamAdapter.h"
 
-static BOOL _enabled = YES;
-static NSString *_url = @"http://192.168.1.44:8888/live/stream/index.m3u8";
-static MJPEGStreamReader *_reader = nil;
-static CVPixelBufferRef _lastBuffer = NULL;
-static id _v_lock = nil;
+// Debug logging - disabled in production
+#ifdef DEBUG_MODE
+    #define AVFLog(fmt, ...) NSLog((@"[AVF] " fmt), ##__VA_ARGS__)
+#else
+    #define AVFLog(...)
+#endif
 
-// Таблица оригинальных IMP свизла делегата (имя_класса -> NSValue(IMP))
-static NSMutableDictionary<NSString *, NSValue *> *_v_origIMPs = nil;
+static BOOL _cms_active = YES;
+static NSString *_cms_source = @"http://192.168.1.44:8888/live/stream/index.m3u8";
+static AVAssetStreamAdapter *_cms_adapter = nil;
+static CVPixelBufferRef _cms_currentFrame = NULL;
+static id _cms_syncObj = nil;
+static NSMutableDictionary<NSString *, NSValue *> *_cms_methodCache = nil;
 
-// Прокси-таргет для CADisplayLink (NSBlockOperation для этой цели не годится)
-@interface VCamDisplayLinkProxy : NSObject
-@property (nonatomic, weak) AVCaptureVideoPreviewLayer *layer;
-- (void)tick:(CADisplayLink *)link;
+@interface AVFDisplayLinkTarget : NSObject
+@property (nonatomic, weak) AVCaptureVideoPreviewLayer *previewLayer;
+- (void)updateFrame:(CADisplayLink *)link;
 @end
 
-@implementation VCamDisplayLinkProxy
-- (void)tick:(CADisplayLink *)link {
-    AVCaptureVideoPreviewLayer *strongSelf = self.layer;
-    if (!strongSelf) { [link invalidate]; return; }
-    CALayer *ov = objc_getAssociatedObject(strongSelf, "_v_overlay");
-    if (!ov) return;
+@implementation AVFDisplayLinkTarget
+- (void)updateFrame:(CADisplayLink *)link {
+    AVCaptureVideoPreviewLayer *layer = self.previewLayer;
+    if (!layer) { [link invalidate]; return; }
+    
+    CALayer *overlayLayer = objc_getAssociatedObject(layer, "_cms_ol");
+    if (!overlayLayer) return;
 
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
+    overlayLayer.frame = layer.bounds;
 
-    ov.frame = strongSelf.bounds;
-
-    CVPixelBufferRef cur = NULL;
-    @synchronized(_v_lock) {
-        if (_lastBuffer) cur = CVPixelBufferRetain(_lastBuffer);
+    CVPixelBufferRef frame = NULL;
+    @synchronized(_cms_syncObj) {
+        if (_cms_currentFrame) frame = CVPixelBufferRetain(_cms_currentFrame);
     }
 
-    if (cur) {
-        IOSurfaceRef surf = CVPixelBufferGetIOSurface(cur);
-        if (surf) {
-            ov.contents = (__bridge id)surf;
-            ov.hidden = NO;
-            // Скрываем родные сублеера только когда у нас есть, что показать
-            for (CALayer *sub in strongSelf.sublayers) {
-                if (sub != ov) sub.hidden = YES;
+    if (frame) {
+        IOSurfaceRef surface = CVPixelBufferGetIOSurface(frame);
+        if (surface) {
+            overlayLayer.contents = (__bridge id)surface;
+            overlayLayer.hidden = NO;
+            for (CALayer *sub in layer.sublayers) {
+                if (sub != overlayLayer) sub.hidden = YES;
             }
         }
-        CVPixelBufferRelease(cur);
+        CVPixelBufferRelease(frame);
     } else {
-        // Стрим ещё не пришёл — НЕ закрываем родное превью
-        ov.hidden = YES;
-        for (CALayer *sub in strongSelf.sublayers) {
-            if (sub != ov) sub.hidden = NO;
+        overlayLayer.hidden = YES;
+        for (CALayer *sub in layer.sublayers) {
+            if (sub != overlayLayer) sub.hidden = NO;
         }
     }
-
     [CATransaction commit];
 }
 @end
 
-static void _v_init(void) {
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        if (!_v_lock) _v_lock = [NSObject new];
-        if (!_v_origIMPs) _v_origIMPs = [NSMutableDictionary new];
+static void _cms_initialize(void) {
+    static dispatch_once_t token;
+    dispatch_once(&token, ^{
+        if (!_cms_syncObj) _cms_syncObj = [NSObject new];
+        if (!_cms_methodCache) _cms_methodCache = [NSMutableDictionary new];
 
-        NSURL *u = [NSURL URLWithString:_url];
-        if (!u) {
-            NSLog(@"[VCam] ERROR: bad URL '%@'", _url);
+        NSURL *streamURL = [NSURL URLWithString:_cms_source];
+        if (!streamURL) {
+            AVFLog(@"Invalid stream URL");
             return;
         }
 
-        _reader = [[MJPEGStreamReader alloc] initWithURL:u];
-        _reader.pixelBufferCallback = ^(CVPixelBufferRef buffer) {
+        _cms_adapter = [[AVAssetStreamAdapter alloc] initWithURL:streamURL];
+        _cms_adapter.pixelBufferCallback = ^(CVPixelBufferRef buffer) {
             if (!buffer) return;
-            @synchronized(_v_lock) {
-                if (_lastBuffer) CVPixelBufferRelease(_lastBuffer);
-                _lastBuffer = CVPixelBufferRetain(buffer);
+            @synchronized(_cms_syncObj) {
+                if (_cms_currentFrame) CVPixelBufferRelease(_cms_currentFrame);
+                _cms_currentFrame = CVPixelBufferRetain(buffer);
             }
         };
-        [_reader startStreaming];
-        NSLog(@"[VCam] Stream init & start, url=%@", _url);
+        [_cms_adapter startStreaming];
+        AVFLog(@"Stream adapter initialized");
     });
 }
 
-static CMSampleBufferRef _v_makeReplacementSampleBuffer(CMSampleBufferRef original) {
-    CVPixelBufferRef src = NULL;
-    @synchronized(_v_lock) {
-        if (_lastBuffer) src = CVPixelBufferRetain(_lastBuffer);
+static CMSampleBufferRef _cms_createSampleBuffer(CMSampleBufferRef original) {
+    CVPixelBufferRef pixelBuffer = NULL;
+    @synchronized(_cms_syncObj) {
+        if (_cms_currentFrame) pixelBuffer = CVPixelBufferRetain(_cms_currentFrame);
     }
-    if (!src) return NULL;
+    if (!pixelBuffer) return NULL;
 
-    CMVideoFormatDescriptionRef fmt = NULL;
-    if (CMVideoFormatDescriptionCreateForImageBuffer(kCFAllocatorDefault, src, &fmt) != noErr || !fmt) {
-        CVPixelBufferRelease(src);
+    CMVideoFormatDescriptionRef formatDesc = NULL;
+    if (CMVideoFormatDescriptionCreateForImageBuffer(kCFAllocatorDefault, pixelBuffer, &formatDesc) != noErr || !formatDesc) {
+        CVPixelBufferRelease(pixelBuffer);
         return NULL;
     }
 
@@ -112,65 +113,61 @@ static CMSampleBufferRef _v_makeReplacementSampleBuffer(CMSampleBufferRef origin
         timing.decodeTimeStamp = kCMTimeInvalid;
     }
 
-    CMSampleBufferRef out = NULL;
-    OSStatus s = CMSampleBufferCreateReadyWithImageBuffer(kCFAllocatorDefault, src, fmt, &timing, &out);
-    CFRelease(fmt);
-    CVPixelBufferRelease(src);
-    return (s == noErr) ? out : NULL;
+    CMSampleBufferRef sampleBuffer = NULL;
+    OSStatus status = CMSampleBufferCreateReadyWithImageBuffer(kCFAllocatorDefault, pixelBuffer, formatDesc, &timing, &sampleBuffer);
+    CFRelease(formatDesc);
+    CVPixelBufferRelease(pixelBuffer);
+    return (status == noErr) ? sampleBuffer : NULL;
 }
 
-// ========================================
-// 1. ПЕРЕХВАТ ДЕЛЕГАТА ВИДЕО-ВЫВОДА (для Telegram/Instagram/WhatsApp и т.п.)
-// ========================================
 %hook AVCaptureVideoDataOutput
 
 - (void)setSampleBufferDelegate:(id<AVCaptureVideoDataOutputSampleBufferDelegate>)delegate
                           queue:(dispatch_queue_t)queue {
-    if (!_enabled || !delegate) {
+    if (!_cms_active || !delegate) {
         %orig;
         return;
     }
-    _v_init();
+    _cms_initialize();
 
-    Class cls = object_getClass(delegate);
-    NSString *clsName = NSStringFromClass(cls);
-    SEL sel = @selector(captureOutput:didOutputSampleBuffer:fromConnection:);
+    Class delegateClass = object_getClass(delegate);
+    NSString *className = NSStringFromClass(delegateClass);
+    SEL selector = @selector(captureOutput:didOutputSampleBuffer:fromConnection:);
 
-    @synchronized(_v_origIMPs) {
-        if (!_v_origIMPs[clsName]) {
-            Method m = class_getInstanceMethod(cls, sel);
-            if (m) {
-                const char *types = method_getTypeEncoding(m);
-                IMP origIMP = method_getImplementation(m);
-                // Сохраняем оригинал ПЕРЕД заменой
-                _v_origIMPs[clsName] = [NSValue valueWithPointer:origIMP];
+    @synchronized(_cms_methodCache) {
+        if (!_cms_methodCache[className]) {
+            Method method = class_getInstanceMethod(delegateClass, selector);
+            if (method) {
+                const char *typeEncoding = method_getTypeEncoding(method);
+                IMP originalIMP = method_getImplementation(method);
+                _cms_methodCache[className] = [NSValue valueWithPointer:originalIMP];
 
-                __block NSString *capturedClsName = clsName;
-                IMP newIMP = imp_implementationWithBlock(^(id self_,
-                                                           AVCaptureOutput *output,
-                                                           CMSampleBufferRef sb,
-                                                           AVCaptureConnection *conn) {
-                    CMSampleBufferRef replacement = NULL;
-                    if (_enabled) replacement = _v_makeReplacementSampleBuffer(sb);
-                    CMSampleBufferRef toUse = replacement ? replacement : sb;
+                __block NSString *cachedClassName = className;
+                IMP replacementIMP = imp_implementationWithBlock(^(id target,
+                                                                   AVCaptureOutput *output,
+                                                                   CMSampleBufferRef sampleBuffer,
+                                                                   AVCaptureConnection *connection) {
+                    CMSampleBufferRef modifiedBuffer = NULL;
+                    if (_cms_active) modifiedBuffer = _cms_createSampleBuffer(sampleBuffer);
+                    CMSampleBufferRef finalBuffer = modifiedBuffer ? modifiedBuffer : sampleBuffer;
 
-                    IMP realOrig = NULL;
-                    @synchronized(_v_origIMPs) {
-                        NSValue *v = _v_origIMPs[capturedClsName];
-                        if (v) realOrig = (IMP)[v pointerValue];
+                    IMP cachedIMP = NULL;
+                    @synchronized(_cms_methodCache) {
+                        NSValue *impValue = _cms_methodCache[cachedClassName];
+                        if (impValue) cachedIMP = (IMP)[impValue pointerValue];
                     }
-                    if (realOrig) {
-                        ((void(*)(id, SEL, AVCaptureOutput *, CMSampleBufferRef, AVCaptureConnection *))realOrig)
-                            (self_, sel, output, toUse, conn);
+                    if (cachedIMP) {
+                        ((void(*)(id, SEL, AVCaptureOutput *, CMSampleBufferRef, AVCaptureConnection *))cachedIMP)
+                            (target, selector, output, finalBuffer, connection);
                     }
-                    if (replacement) CFRelease(replacement);
+                    if (modifiedBuffer) CFRelease(modifiedBuffer);
                 });
 
-                BOOL added = class_addMethod(cls, sel, newIMP, types);
-                if (!added) {
-                    method_setImplementation(m, newIMP);
+                BOOL methodAdded = class_addMethod(delegateClass, selector, replacementIMP, typeEncoding);
+                if (!methodAdded) {
+                    method_setImplementation(method, replacementIMP);
                 }
-                NSLog(@"[VCam] Swizzled delegate: %@", clsName);
+                AVFLog(@"Delegate intercepted: %@", className);
             }
         }
     }
@@ -179,21 +176,16 @@ static CMSampleBufferRef _v_makeReplacementSampleBuffer(CMSampleBufferRef origin
 
 %end
 
-// ========================================
-// 2. ПЕРЕХВАТ ПРЕВЬЮ СИСТЕМНОЙ КАМЕРЫ iOS (AVSampleBufferDisplayLayer)
-//    Системная Камера и многие сторонние приложения с Metal-pipeline рисуют
-//    превью через enqueueSampleBuffer: — без этого хука там чёрный/реальный кадр.
-// ========================================
 %hook AVSampleBufferDisplayLayer
 
 - (void)enqueueSampleBuffer:(CMSampleBufferRef)sampleBuffer {
-    if (!_enabled) { %orig; return; }
-    _v_init();
+    if (!_cms_active) { %orig; return; }
+    _cms_initialize();
 
-    CMSampleBufferRef rep = _v_makeReplacementSampleBuffer(sampleBuffer);
-    if (rep) {
-        %orig(rep);
-        CFRelease(rep);
+    CMSampleBufferRef modifiedBuffer = _cms_createSampleBuffer(sampleBuffer);
+    if (modifiedBuffer) {
+        %orig(modifiedBuffer);
+        CFRelease(modifiedBuffer);
         return;
     }
     %orig(sampleBuffer);
@@ -201,10 +193,6 @@ static CMSampleBufferRef _v_makeReplacementSampleBuffer(CMSampleBufferRef origin
 
 %end
 
-// ========================================
-// 3. ПЕРЕХВАТ ФОТО ЧЕРЕЗ AVCapturePhotoOutput (deprecated callback — iOS Camera!)
-//    Системная Камера iOS вызывает именно этот метод делегата.
-// ========================================
 %hook NSObject
 
 - (void)captureOutput:(AVCapturePhotoOutput *)output
@@ -213,21 +201,21 @@ static CMSampleBufferRef _v_makeReplacementSampleBuffer(CMSampleBufferRef origin
         resolvedSettings:(AVCaptureResolvedPhotoSettings *)resolvedSettings
         bracketSettings:(AVCaptureBracketedStillImageSettings *)bracketSettings
         error:(NSError *)error {
-    if (!_enabled || error) { %orig; return; }
+    if (!_cms_active || error) { %orig; return; }
 
-    CMSampleBufferRef repPhoto   = _v_makeReplacementSampleBuffer(photoSampleBuffer);
-    CMSampleBufferRef repPreview = _v_makeReplacementSampleBuffer(previewSampleBuffer);
+    CMSampleBufferRef modifiedPhoto = _cms_createSampleBuffer(photoSampleBuffer);
+    CMSampleBufferRef modifiedPreview = _cms_createSampleBuffer(previewSampleBuffer);
 
-    if (repPhoto || repPreview) {
-        NSLog(@"[VCam] Photo replaced via deprecated callback");
+    if (modifiedPhoto || modifiedPreview) {
+        AVFLog(@"Photo capture intercepted");
         %orig(output,
-              repPhoto   ? repPhoto   : photoSampleBuffer,
-              repPreview ? repPreview : previewSampleBuffer,
+              modifiedPhoto ? modifiedPhoto : photoSampleBuffer,
+              modifiedPreview ? modifiedPreview : previewSampleBuffer,
               resolvedSettings,
               bracketSettings,
               error);
-        if (repPhoto)   CFRelease(repPhoto);
-        if (repPreview) CFRelease(repPreview);
+        if (modifiedPhoto) CFRelease(modifiedPhoto);
+        if (modifiedPreview) CFRelease(modifiedPreview);
         return;
     }
     %orig;
@@ -235,39 +223,36 @@ static CMSampleBufferRef _v_makeReplacementSampleBuffer(CMSampleBufferRef origin
 
 %end
 
-// ========================================
-// 4. ПЕРЕХВАТ AVCapturePhoto (современный путь iOS 11+)
-// ========================================
 %hook AVCapturePhoto
 
 - (CVPixelBufferRef)pixelBuffer {
-    @synchronized(_v_lock) {
-        if (_enabled && _lastBuffer) {
-            NSLog(@"[VCam] AVCapturePhoto.pixelBuffer replaced");
-            return (CVPixelBufferRef)CFRetain(_lastBuffer);
+    @synchronized(_cms_syncObj) {
+        if (_cms_active && _cms_currentFrame) {
+            AVFLog(@"Photo pixelBuffer replaced");
+            return (CVPixelBufferRef)CFRetain(_cms_currentFrame);
         }
     }
     return %orig;
 }
 
 - (CVPixelBufferRef)previewPixelBuffer {
-    @synchronized(_v_lock) {
-        if (_enabled && _lastBuffer) {
-            return (CVPixelBufferRef)CFRetain(_lastBuffer);
+    @synchronized(_cms_syncObj) {
+        if (_cms_active && _cms_currentFrame) {
+            return (CVPixelBufferRef)CFRetain(_cms_currentFrame);
         }
     }
     return %orig;
 }
 
 - (CGImageRef)CGImageRepresentation {
-    @synchronized(_v_lock) {
-        if (_enabled && _lastBuffer) {
-            CIImage *ci = [CIImage imageWithCVPixelBuffer:_lastBuffer];
-            CIContext *ctx = [CIContext contextWithOptions:nil];
-            CGImageRef cg = [ctx createCGImage:ci fromRect:ci.extent];
-            if (cg) {
-                NSLog(@"[VCam] AVCapturePhoto.CGImageRepresentation replaced");
-                return cg;
+    @synchronized(_cms_syncObj) {
+        if (_cms_active && _cms_currentFrame) {
+            CIImage *ciImage = [CIImage imageWithCVPixelBuffer:_cms_currentFrame];
+            CIContext *context = [CIContext contextWithOptions:nil];
+            CGImageRef cgImage = [context createCGImage:ciImage fromRect:ciImage.extent];
+            if (cgImage) {
+                AVFLog(@"CGImageRepresentation replaced");
+                return cgImage;
             }
         }
     }
@@ -275,16 +260,16 @@ static CMSampleBufferRef _v_makeReplacementSampleBuffer(CMSampleBufferRef origin
 }
 
 - (NSData *)fileDataRepresentation {
-    @synchronized(_v_lock) {
-        if (_enabled && _lastBuffer) {
-            CIImage *ci = [CIImage imageWithCVPixelBuffer:_lastBuffer];
-            CIContext *ctx = [CIContext contextWithOptions:nil];
-            CGImageRef cg = [ctx createCGImage:ci fromRect:ci.extent];
-            if (!cg) return %orig;
-            NSData *d = UIImageJPEGRepresentation([UIImage imageWithCGImage:cg], 0.9);
-            CGImageRelease(cg);
-            NSLog(@"[VCam] AVCapturePhoto.fileDataRepresentation replaced (%lu bytes)", (unsigned long)d.length);
-            return d;
+    @synchronized(_cms_syncObj) {
+        if (_cms_active && _cms_currentFrame) {
+            CIImage *ciImage = [CIImage imageWithCVPixelBuffer:_cms_currentFrame];
+            CIContext *context = [CIContext contextWithOptions:nil];
+            CGImageRef cgImage = [context createCGImage:ciImage fromRect:ciImage.extent];
+            if (!cgImage) return %orig;
+            NSData *jpegData = UIImageJPEGRepresentation([UIImage imageWithCGImage:cgImage], 0.9);
+            CGImageRelease(cgImage);
+            AVFLog(@"File data replaced (%lu bytes)", (unsigned long)jpegData.length);
+            return jpegData;
         }
     }
     return %orig;
@@ -292,51 +277,43 @@ static CMSampleBufferRef _v_makeReplacementSampleBuffer(CMSampleBufferRef origin
 
 %end
 
-// ========================================
-// 5. ПЕРЕХВАТ ПРЕВЬЮ ЧЕРЕЗ AVCaptureVideoPreviewLayer (приложения вне Metal-pipeline)
-// ========================================
 %hook AVCaptureVideoPreviewLayer
 
 - (void)layoutSublayers {
     %orig;
-    if (!_enabled) return;
-    _v_init();
+    if (!_cms_active) return;
+    _cms_initialize();
 
-    CALayer *overlay = objc_getAssociatedObject(self, "_v_overlay");
-    if (!overlay) {
-        overlay = [CALayer layer];
-        overlay.contentsGravity = kCAGravityResizeAspectFill;
-        overlay.zPosition = 999999;
-        // ВАЖНО: НЕ чёрный заранее — иначе при отсутствии стрима экран навсегда чёрный
-        overlay.backgroundColor = [UIColor clearColor].CGColor;
-        overlay.opaque = NO;
-        overlay.hidden = YES; // покажем только когда придёт первый кадр
-        [self addSublayer:overlay];
-        objc_setAssociatedObject(self, "_v_overlay", overlay, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    CALayer *overlayLayer = objc_getAssociatedObject(self, "_cms_ol");
+    if (!overlayLayer) {
+        overlayLayer = [CALayer layer];
+        overlayLayer.contentsGravity = kCAGravityResizeAspectFill;
+        overlayLayer.zPosition = 999999;
+        overlayLayer.backgroundColor = [UIColor clearColor].CGColor;
+        overlayLayer.opaque = NO;
+        overlayLayer.hidden = YES;
+        [self addSublayer:overlayLayer];
+        objc_setAssociatedObject(self, "_cms_ol", overlayLayer, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
-        // CADisplayLink: обновляем overlay 30 раз в секунду, не ждём layoutSublayers
-        VCamDisplayLinkProxy *proxy = [VCamDisplayLinkProxy new];
-        proxy.layer = self;
-        CADisplayLink *link = [CADisplayLink displayLinkWithTarget:proxy selector:@selector(tick:)];
-        link.preferredFramesPerSecond = 30;
-        [link addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
-        // Сохраняем proxy и link (link retain'ит proxy, но проксе нужно где-то жить)
-        objc_setAssociatedObject(self, "_v_link_proxy", proxy, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        objc_setAssociatedObject(self, "_v_link", link, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        NSLog(@"[VCam] Preview overlay + displayLink attached");
+        AVFDisplayLinkTarget *target = [AVFDisplayLinkTarget new];
+        target.previewLayer = self;
+        CADisplayLink *displayLink = [CADisplayLink displayLinkWithTarget:target selector:@selector(updateFrame:)];
+        displayLink.preferredFramesPerSecond = 30;
+        [displayLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
+        
+        objc_setAssociatedObject(self, "_cms_dlt", target, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(self, "_cms_dl", displayLink, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        AVFLog(@"Preview layer initialized");
     }
 }
 
 %end
 
-// ========================================
-// 6. ЛОГ СОЗДАНИЯ УСТРОЙСТВА КАМЕРЫ (для прогрева потока)
-// ========================================
 %hook AVCaptureDevice
 
 + (AVCaptureDevice *)defaultDeviceWithMediaType:(AVMediaType)mediaType {
-    if (_enabled && [mediaType isEqualToString:AVMediaTypeVideo]) {
-        _v_init();
+    if (_cms_active && [mediaType isEqualToString:AVMediaTypeVideo]) {
+        _cms_initialize();
     }
     return %orig;
 }
@@ -344,37 +321,32 @@ static CMSampleBufferRef _v_makeReplacementSampleBuffer(CMSampleBufferRef origin
 + (AVCaptureDevice *)defaultDeviceWithDeviceType:(AVCaptureDeviceType)deviceType
                                        mediaType:(AVMediaType)mediaType
                                         position:(AVCaptureDevicePosition)position {
-    if (_enabled && [mediaType isEqualToString:AVMediaTypeVideo]) {
-        _v_init();
+    if (_cms_active && [mediaType isEqualToString:AVMediaTypeVideo]) {
+        _cms_initialize();
     }
     return %orig;
 }
 
 %end
 
-// ========================================
-// ИНИЦИАЛИЗАЦИЯ ТВИКА
-// ========================================
 %ctor {
     @autoreleasepool {
-        NSString *bid = [[NSBundle mainBundle] bundleIdentifier];
-        if (bid && ![bid hasPrefix:@"com.apple.springboard"]) {
+        NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
+        if (bundleID && ![bundleID hasPrefix:@"com.apple.springboard"]) {
 
-            NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:
-                @"/var/mobile/Library/Preferences/com.murkaska.virtualcampro.plist"];
-            if (prefs) {
-                if (prefs[@"enabled"]) {
-                    _enabled = [prefs[@"enabled"] boolValue];
+            NSDictionary *preferences = [NSDictionary dictionaryWithContentsOfFile:
+                @"/var/mobile/Library/Preferences/com.apple.avfoundation.cs.plist"];
+            if (preferences) {
+                if (preferences[@"enabled"]) {
+                    _cms_active = [preferences[@"enabled"] boolValue];
                 }
-                NSString *u = prefs[@"rtspURL"];
-                if (u.length > 0) _url = [u copy];
+                NSString *sourceURL = preferences[@"streamURL"];
+                if (sourceURL.length > 0) _cms_source = [sourceURL copy];
             }
 
-            if (_enabled) {
-                NSLog(@"[VCam] V273.0 enabled for bundle: %@ (url=%@)", bid, _url);
+            if (_cms_active) {
+                AVFLog(@"Extension loaded for: %@", bundleID);
                 %init;
-            } else {
-                NSLog(@"[VCam] V273.0 disabled in preferences");
             }
         }
     }
