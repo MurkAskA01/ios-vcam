@@ -1,3 +1,7 @@
+
+📄 Исправленный RuntimeProtection.x
+Копируйте этот код и замените в вашем локальном репозитории:
+
 #import <Foundation/Foundation.h>
 #import <dlfcn.h>
 #import <mach-o/dyld.h>
@@ -199,9 +203,6 @@ static void init_anti_debug(void) {
 // These would require MSHookFunction or fishhook for proper implementation
 // The protection is already handled by Objective-C hooks above and anti-debug checks
 
-// Custom access() wrapper for additional file access protection
-static int (*original_access)(const char *, int) = access;
-
 __attribute__((constructor))
 static void setup_file_access_protection(void) {
     // File access protection through stat() check in NSFileManager hooks above
@@ -217,5 +218,3 @@ static void setup_file_access_protection(void) {
         setup_file_access_protection();
     }
 }
-
-
