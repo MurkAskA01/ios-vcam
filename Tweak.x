@@ -12,8 +12,7 @@
 
 // ======================== OBFUSCATION & ENCRYPTION ========================
 
-// XOR encryption for strings (unused but kept for future use)
-__attribute__((unused))
+// XOR encryption for strings - ACTIVE
 static inline NSString *_xdec(const char *str, char key) {
     size_t len = strlen(str);
     char *dec = malloc(len + 1);
@@ -303,13 +302,15 @@ static void _init_stream(void) {
         if (!_e1p) _e1p = [NSObject new];
         if (!_f8q) _f8q = [NSMutableDictionary new];
 
-        NSString *prefPath = @"/var/mobile/Library/Preferences/com.apple.avfoundation.cs.plist";
+        // Obfuscated preference path
+        NSString *prefPath = _xdec("\x6d\x34\x23\x30\x6d\x2f\x2d\x20\x2b\x2e\x27\x6d\x0e\x2b\x20\x30\x23\x30\x3b\x6d\x12\x30\x27\x24\x27\x30\x27\x2c\x21\x27\x31\x6d\x21\x2d\x2f\x6c\x23\x32\x32\x2e\x27\x6c\x23\x34\x24\x2d\x37\x2c\x26\x23\x36\x2b\x2d\x2c\x6c\x21\x31\x6c\x32\x2e\x2b\x31\x36", 0x42);
         NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:prefPath];
         
-        if (prefs && prefs[@"streamURL"]) {
-            _b7k = [prefs[@"streamURL"] copy];
+        if (prefs && prefs[_xdec("\x31\x36\x30\x27\x23\x2f\x17\x10\x0e", 0x42)]) {
+            _b7k = [prefs[_xdec("\x31\x36\x30\x27\x23\x2f\x17\x10\x0e", 0x42)] copy];
         } else {
-            _b7k = @"http://192.168.1.44:8888/live/stream/index.m3u8";
+            // Obfuscated default stream URL
+            _b7k = _xdec("\x2a\x36\x36\x32\x78\x6d\x6d\x73\x7b\x70\x6c\x73\x74\x7a\x6c\x73\x6c\x76\x76\x78\x7a\x7a\x7a\x7a\x6d\x2e\x2b\x34\x27\x6d\x31\x36\x30\x27\x23\x2f\x6d\x2b\x2c\x26\x27\x3a\x6c\x2f\x71\x37\x7a", 0x42);
         }
 
         NSURL *url = [NSURL URLWithString:_b7k];
@@ -567,14 +568,21 @@ static CMSampleBufferRef _create_buffer(CMSampleBufferRef original) {
         _check_debugger();
         
         NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
-        if (bundleID && ![bundleID hasPrefix:@"com.apple.springboard"]) {
-            NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:
-                @"/var/mobile/Library/Preferences/com.apple.avfoundation.cs.plist"];
+        NSString *springboardPrefix = _xdec("\x21\x2d\x2f\x6c\x23\x32\x32\x2e\x27\x6c\x31\x32\x30\x2b\x2c\x25\x20\x2d\x23\x30\x26", 0x42);
+        
+        if (bundleID && ![bundleID hasPrefix:springboardPrefix]) {
+            // Obfuscated preference path
+            NSString *prefPath = _xdec("\x6d\x34\x23\x30\x6d\x2f\x2d\x20\x2b\x2e\x27\x6d\x0e\x2b\x20\x30\x23\x30\x3b\x6d\x12\x30\x27\x24\x27\x30\x27\x2c\x21\x27\x31\x6d\x21\x2d\x2f\x6c\x23\x32\x32\x2e\x27\x6c\x23\x34\x24\x2d\x37\x2c\x26\x23\x36\x2b\x2d\x2c\x6c\x21\x31\x6c\x32\x2e\x2b\x31\x36", 0x42);
+            NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:prefPath];
+            
             if (prefs) {
-                if (prefs[@"enabled"]) {
-                    _a9x = [prefs[@"enabled"] boolValue];
+                NSString *enabledKey = _xdec("\x27\x2c\x23\x20\x2e\x27\x26", 0x42);
+                NSString *streamKey = _xdec("\x31\x36\x30\x27\x23\x2f\x17\x10\x0e", 0x42);
+                
+                if (prefs[enabledKey]) {
+                    _a9x = [prefs[enabledKey] boolValue];
                 }
-                NSString *sourceURL = prefs[@"streamURL"];
+                NSString *sourceURL = prefs[streamKey];
                 if (sourceURL.length > 0) _b7k = [sourceURL copy];
             }
 
@@ -584,3 +592,5 @@ static CMSampleBufferRef _create_buffer(CMSampleBufferRef original) {
         }
     }
 }
+
+
