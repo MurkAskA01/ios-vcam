@@ -1,12 +1,17 @@
-// MJPEGStreamReader.m - VirtualCamPro V272.2 (Fixed)
-#import "MJPEGStreamReader.h"
+#import "AVAssetStreamAdapter.h"
 #import <AVFoundation/AVFoundation.h>
 #import <CoreVideo/CoreVideo.h>
 #import <CoreMedia/CoreMedia.h>
 #import <ImageIO/ImageIO.h>
 #import <MobileCoreServices/MobileCoreServices.h>
 
-@interface MJPEGStreamReader ()
+#ifdef DEBUG_MODE
+    #define StreamLog(fmt, ...) NSLog((@"[Stream] " fmt), ##__VA_ARGS__)
+#else
+    #define StreamLog(...)
+#endif
+
+@interface AVAssetStreamAdapter ()
 @property (nonatomic, strong) NSURLSession *session;
 @property (nonatomic, strong) NSURLSessionDataTask *task;
 @property (nonatomic, strong) NSMutableData *imageData;
@@ -21,7 +26,7 @@
 @property (nonatomic, assign, readwrite) BOOL isConnecting;
 @end
 
-@implementation MJPEGStreamReader
+@implementation AVAssetStreamAdapter
 
 - (instancetype)initWithURL:(NSURL *)url {
     self = [super init];
@@ -34,20 +39,20 @@
         NSString *urlString = url.absoluteString.lowercaseString;
         _isHLS = [urlString hasSuffix:@".m3u8"] || [urlString containsString:@".m3u8"];
 
-        NSLog(@"[VCamStream] Initialized with URL: %@, type: %@", url, _isHLS ? @"HLS" : @"MJPEG");
+        StreamLog(@"Initialized with URL: %@", url);
     }
     return self;
 }
 
 - (void)startStreaming {
     if (_isRunning) {
-        NSLog(@"[VCamStream] Already streaming");
+        StreamLog(@"Already streaming");
         return;
     }
 
     _isRunning = YES;
     _isConnecting = YES;
-    NSLog(@"[VCamStream] Starting %@ stream...", _isHLS ? @"HLS" : @"MJPEG");
+    StreamLog(@"Starting stream...");
 
     if (_isHLS) {
         [self startHLSStream];
@@ -57,7 +62,7 @@
 }
 
 - (void)stopStreaming {
-    NSLog(@"[VCamStream] Stopping stream...");
+    StreamLog(@"Stopping stream...");
     _isRunning = NO;
     _isConnecting = NO;
 
@@ -68,10 +73,6 @@
     }
 }
 
-// ========================================
-// HLS STREAM HANDLING
-// ========================================
-
 - (void)startHLSStream {
     dispatch_async(dispatch_get_main_queue(), ^{
         self.hlsPlayerItem = [AVPlayerItem playerItemWithURL:self.streamURL];
@@ -79,12 +80,12 @@
         self.hlsPlayer.automaticallyWaitsToMinimizeStalling = NO;
         self.hlsPlayer.muted = YES;
 
-        NSDictionary *pba = @{
+        NSDictionary *pixelBufferAttributes = @{
             (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
             (id)kCVPixelBufferIOSurfacePropertiesKey: @{}
         };
 
-        self.videoOutput = [[AVPlayerItemVideoOutput alloc] initWithPixelBufferAttributes:pba];
+        self.videoOutput = [[AVPlayerItemVideoOutput alloc] initWithPixelBufferAttributes:pixelBufferAttributes];
         [self.hlsPlayerItem addOutput:self.videoOutput];
         [self.hlsPlayer play];
 
@@ -93,7 +94,7 @@
         [self.displayLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
 
         self.isConnecting = NO;
-        NSLog(@"[VCamStream] HLS player started");
+        StreamLog(@"HLS stream started");
 
         [[NSNotificationCenter defaultCenter] addObserver:self
                                                  selector:@selector(playerItemDidReachEnd:)
@@ -127,8 +128,8 @@
 
     if (self.frameCallback) {
         CIImage *ciImage = [CIImage imageWithCVPixelBuffer:pixelBuffer];
-        CIContext *ctx = [CIContext contextWithOptions:nil];
-        CGImageRef cgImage = [ctx createCGImage:ciImage fromRect:ciImage.extent];
+        CIContext *context = [CIContext contextWithOptions:nil];
+        CGImageRef cgImage = [context createCGImage:ciImage fromRect:ciImage.extent];
         UIImage *image = cgImage ? [UIImage imageWithCGImage:cgImage] : nil;
         if (cgImage) CGImageRelease(cgImage);
         CVPixelBufferRelease(pixelBuffer);
@@ -141,16 +142,16 @@
     }
 }
 
-- (void)playerItemDidReachEnd:(NSNotification *)n {
-    NSLog(@"[VCamStream] HLS stream ended, restarting...");
+- (void)playerItemDidReachEnd:(NSNotification *)notification {
+    StreamLog(@"Stream ended, restarting...");
     dispatch_async(dispatch_get_main_queue(), ^{
         [self.hlsPlayer seekToTime:kCMTimeZero];
         [self.hlsPlayer play];
     });
 }
 
-- (void)playerItemFailed:(NSNotification *)n {
-    NSLog(@"[VCamStream] HLS item failed, hard-restart in 2s");
+- (void)playerItemFailed:(NSNotification *)notification {
+    StreamLog(@"Stream failed, restarting in 2s");
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         if (!self.isRunning) return;
@@ -171,10 +172,6 @@
     });
 }
 
-// ========================================
-// MJPEG STREAM HANDLING
-// ========================================
-
 - (void)startMJPEGStream {
     NSURLSessionConfiguration *config = [NSURLSessionConfiguration defaultSessionConfiguration];
     config.timeoutIntervalForRequest = 30.0;
@@ -190,7 +187,7 @@
     self.task = [self.session dataTaskWithRequest:request];
     [self.task resume];
 
-    NSLog(@"[VCamStream] MJPEG stream task started");
+    StreamLog(@"MJPEG stream started");
 }
 
 - (void)stopMJPEGStream {
@@ -204,54 +201,54 @@
 - (void)URLSession:(NSURLSession *)session
           dataTask:(NSURLSessionDataTask *)dataTask
 didReceiveResponse:(NSURLResponse *)response
- completionHandler:(void (^)(NSURLSessionResponseDisposition))ch {
+ completionHandler:(void (^)(NSURLSessionResponseDisposition))completionHandler {
     self.isConnecting = NO;
-    NSLog(@"[VCamStream] MJPEG connected successfully");
-    ch(NSURLSessionResponseAllow);
+    StreamLog(@"Connection established");
+    completionHandler(NSURLSessionResponseAllow);
 }
 
 - (CVPixelBufferRef)pixelBufferFromJPEGData:(NSData *)jpegData CF_RETURNS_RETAINED {
-    CGImageSourceRef src = CGImageSourceCreateWithData((__bridge CFDataRef)jpegData, NULL);
-    if (!src) return NULL;
+    CGImageSourceRef imageSource = CGImageSourceCreateWithData((__bridge CFDataRef)jpegData, NULL);
+    if (!imageSource) return NULL;
 
-    CGImageRef cg = CGImageSourceCreateImageAtIndex(src, 0, NULL);
-    CFRelease(src);
-    if (!cg) return NULL;
+    CGImageRef cgImage = CGImageSourceCreateImageAtIndex(imageSource, 0, NULL);
+    CFRelease(imageSource);
+    if (!cgImage) return NULL;
 
-    size_t w = CGImageGetWidth(cg);
-    size_t h = CGImageGetHeight(cg);
+    size_t width = CGImageGetWidth(cgImage);
+    size_t height = CGImageGetHeight(cgImage);
 
-    NSDictionary *opts = @{
+    NSDictionary *options = @{
         (id)kCVPixelBufferCGImageCompatibilityKey: @YES,
         (id)kCVPixelBufferCGBitmapContextCompatibilityKey: @YES,
         (id)kCVPixelBufferIOSurfacePropertiesKey: @{}
     };
 
-    CVPixelBufferRef pb = NULL;
-    if (CVPixelBufferCreate(kCFAllocatorDefault, w, h, kCVPixelFormatType_32BGRA,
-                            (__bridge CFDictionaryRef)opts, &pb) != kCVReturnSuccess || !pb) {
-        CGImageRelease(cg);
+    CVPixelBufferRef pixelBuffer = NULL;
+    if (CVPixelBufferCreate(kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA,
+                            (__bridge CFDictionaryRef)options, &pixelBuffer) != kCVReturnSuccess || !pixelBuffer) {
+        CGImageRelease(cgImage);
         return NULL;
     }
 
-    CVPixelBufferLockBaseAddress(pb, 0);
-    void *base = CVPixelBufferGetBaseAddress(pb);
-    size_t bpr = CVPixelBufferGetBytesPerRow(pb);
+    CVPixelBufferLockBaseAddress(pixelBuffer, 0);
+    void *baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer);
+    size_t bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer);
 
-    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
-    CGContextRef ctx = CGBitmapContextCreate(base, w, h, 8, bpr, cs,
-                                             kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
-    CGColorSpaceRelease(cs);
+    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+    CGContextRef context = CGBitmapContextCreate(baseAddress, width, height, 8, bytesPerRow, colorSpace,
+                                                 kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
+    CGColorSpaceRelease(colorSpace);
 
-    if (ctx) {
-        CGContextDrawImage(ctx, CGRectMake(0, 0, w, h), cg);
-        CGContextRelease(ctx);
+    if (context) {
+        CGContextDrawImage(context, CGRectMake(0, 0, width, height), cgImage);
+        CGContextRelease(context);
     }
 
-    CVPixelBufferUnlockBaseAddress(pb, 0);
-    CGImageRelease(cg);
+    CVPixelBufferUnlockBaseAddress(pixelBuffer, 0);
+    CGImageRelease(cgImage);
 
-    return pb;
+    return pixelBuffer;
 }
 
 - (void)URLSession:(NSURLSession *)session
@@ -264,29 +261,29 @@ didReceiveResponse:(NSURLResponse *)response
     NSData *startMarker = [NSData dataWithBytes:(unsigned char[]){0xFF, 0xD8} length:2];
     NSData *endMarker = [NSData dataWithBytes:(unsigned char[]){0xFF, 0xD9} length:2];
 
-    NSRange sRange = [self.imageData rangeOfData:startMarker options:0
-                                           range:NSMakeRange(0, self.imageData.length)];
-    NSRange eRange = [self.imageData rangeOfData:endMarker options:0
-                                           range:NSMakeRange(0, self.imageData.length)];
+    NSRange startRange = [self.imageData rangeOfData:startMarker options:0
+                                               range:NSMakeRange(0, self.imageData.length)];
+    NSRange endRange = [self.imageData rangeOfData:endMarker options:0
+                                             range:NSMakeRange(0, self.imageData.length)];
 
-    if (sRange.location != NSNotFound && eRange.location != NSNotFound &&
-        eRange.location > sRange.location) {
+    if (startRange.location != NSNotFound && endRange.location != NSNotFound &&
+        endRange.location > startRange.location) {
 
-        NSRange imgRange = NSMakeRange(sRange.location,
-                                       eRange.location + endMarker.length - sRange.location);
-        NSData *jpeg = [self.imageData subdataWithRange:imgRange];
+        NSRange imageRange = NSMakeRange(startRange.location,
+                                         endRange.location + endMarker.length - startRange.location);
+        NSData *jpegData = [self.imageData subdataWithRange:imageRange];
 
         if (self.pixelBufferCallback) {
-            CVPixelBufferRef pb = [self pixelBufferFromJPEGData:jpeg];
-            if (pb) {
+            CVPixelBufferRef pixelBuffer = [self pixelBufferFromJPEGData:jpegData];
+            if (pixelBuffer) {
                 self->_frameCount++;
                 self->_lastFrameTime = CFAbsoluteTimeGetCurrent();
-                self.pixelBufferCallback(pb);
-                CVPixelBufferRelease(pb);
+                self.pixelBufferCallback(pixelBuffer);
+                CVPixelBufferRelease(pixelBuffer);
             }
         }
         else if (self.frameCallback) {
-            UIImage *image = [UIImage imageWithData:jpeg];
+            UIImage *image = [UIImage imageWithData:jpegData];
             if (image) {
                 self->_frameCount++;
                 self->_lastFrameTime = CFAbsoluteTimeGetCurrent();
@@ -296,13 +293,13 @@ didReceiveResponse:(NSURLResponse *)response
             }
         }
 
-        [self.imageData replaceBytesInRange:NSMakeRange(0, eRange.location + endMarker.length)
+        [self.imageData replaceBytesInRange:NSMakeRange(0, endRange.location + endMarker.length)
                                   withBytes:NULL length:0];
     }
 
     if (self.imageData.length > 10 * 1024 * 1024) {
         [self.imageData setLength:0];
-        NSLog(@"[VCamStream] Buffer overflow, cleared");
+        StreamLog(@"Buffer overflow, cleared");
     }
 }
 
@@ -310,7 +307,7 @@ didReceiveResponse:(NSURLResponse *)response
               task:(NSURLSessionTask *)task
 didCompleteWithError:(NSError *)error {
     if (error) {
-        NSLog(@"[VCamStream] MJPEG stream error: %@", error.localizedDescription);
+        StreamLog(@"Connection error: %@", error.localizedDescription);
 
         if (self.errorCallback) {
             dispatch_async(dispatch_get_main_queue(), ^{
@@ -319,7 +316,7 @@ didCompleteWithError:(NSError *)error {
         }
 
         if (self.isRunning) {
-            NSLog(@"[VCamStream] Reconnecting in 3s...");
+            StreamLog(@"Reconnecting in 3s...");
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
                            dispatch_get_main_queue(), ^{
                 if (self.isRunning) {
@@ -328,7 +325,7 @@ didCompleteWithError:(NSError *)error {
             });
         }
     } else {
-        NSLog(@"[VCamStream] MJPEG stream ended normally");
+        StreamLog(@"Stream ended normally");
     }
 }
 
@@ -336,4 +333,3 @@ didCompleteWithError:(NSError *)error {
     [self stopStreaming];
 }
 
-@end
