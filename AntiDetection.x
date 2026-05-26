@@ -98,7 +98,7 @@
     
     NSMutableData *newImageData = [NSMutableData data];
     CGImageDestinationRef destination = CGImageDestinationCreateWithData((__bridge CFMutableDataRef)newImageData,
-                                                                         kUTTypeJPEG,
+                                                                         (__bridge CFStringRef)@"public.jpeg",
                                                                          1,
                                                                          NULL);
     if (!destination) {
