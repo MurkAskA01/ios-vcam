@@ -17,7 +17,7 @@ static inline NSString *_xdec(const char *str, char key) {
     size_t len = strlen(str);
     char *dec = malloc(len + 1);
     for (size_t i = 0; i < len; i++) dec[i] = str[i] ^ key;
-    dec[len] = '';
+    dec[len] = '\0';
     NSString *result = [NSString stringWithUTF8String:dec];
     free(dec);
     return result;
