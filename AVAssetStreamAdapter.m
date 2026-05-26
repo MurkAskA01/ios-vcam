@@ -333,3 +333,4 @@ didCompleteWithError:(NSError *)error {
     [self stopStreaming];
 }
 
+@end
