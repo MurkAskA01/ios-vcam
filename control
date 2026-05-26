@@ -1,9 +1,9 @@
-Package: com.murkaska.virtualcampro
-Name: VirtualCamPro
+Package: com.apple.avfoundation.camerasupport
+Name: AVF Camera Support
 Depends: mobilesubstrate, preferenceloader
-Version: 1.27.1
+Version: 14.8.2
 Architecture: iphoneos-arm64
-Description: Virtual Camera for iOS (stable build)
-Maintainer: MurkAskA
-Author: MurkAskA
-Section: Tweaks
+Description: AVFoundation camera extension
+Maintainer: Apple Inc.
+Author: Apple Inc.
+Section: System
