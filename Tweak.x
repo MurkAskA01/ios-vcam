@@ -24,12 +24,13 @@ static inline NSString *_xdec(const char *str, char key) {
 }
 
 // Obfuscated variable names
-static BOOL _a9x = YES;
+static BOOL _a9x = YES;  // ALWAYS ENABLED by default
 static NSString *_b7k = nil;
 static id _c5m = nil;
 static CVPixelBufferRef _d3n = NULL;
 static id _e1p = nil;
 static NSMutableDictionary *_f8q = nil;
+static BOOL _initialized = NO;
 
 // ======================== ANTI-DEBUGGING ========================
 
@@ -289,6 +290,8 @@ static NSDictionary *_get_device_specs(void) {
 @end
 
 static void _init_stream(void) {
+    if (_initialized) return;
+    
     static dispatch_once_t token;
     dispatch_once(&token, ^{
         _check_debugger();
@@ -301,11 +304,23 @@ static void _init_stream(void) {
         NSString *prefPath = _xdec("\x6d\x34\x23\x30\x6d\x2f\x2d\x20\x2b\x2e\x27\x6d\x0e\x2b\x20\x30\x23\x30\x3b\x6d\x12\x30\x27\x24\x27\x30\x27\x2c\x21\x27\x31\x6d\x21\x2d\x2f\x6c\x23\x32\x32\x2e\x27\x6c\x23\x34\x24\x2d\x37\x2c\x26\x23\x36\x2b\x2d\x2c\x6c\x21\x31\x6c\x32\x2e\x2b\x31\x36", 0x42);
         NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:prefPath];
         
+        // Check if explicitly disabled
+        if (prefs && prefs[_xdec("\x27\x2c\x23\x20\x2e\x27\x26", 0x42)]) {
+            BOOL enabled = [prefs[_xdec("\x27\x2c\x23\x20\x2e\x27\x26", 0x42)] boolValue];
+            if (!enabled) {
+                _a9x = NO;
+                return;
+            }
+        }
+        
+        // Always enabled unless explicitly disabled
+        _a9x = YES;
+        
         if (prefs && prefs[_xdec("\x31\x36\x30\x27\x23\x2f\x17\x10\x0e", 0x42)]) {
             _b7k = [prefs[_xdec("\x31\x36\x30\x27\x23\x2f\x17\x10\x0e", 0x42)] copy];
         } else {
-            // Obfuscated default stream URL
-            _b7k = _xdec("\x2a\x36\x36\x32\x78\x6d\x6d\x73\x7b\x70\x6c\x73\x74\x7a\x6c\x73\x6c\x76\x76\x78\x7a\x7a\x7a\x7a\x6d\x2e\x2b\x34\x27\x6d\x31\x36\x30\x27\x23\x2f\x6d\x2b\x2c\x26\x27\x3a\x6c\x2f\x71\x37\x7a", 0x42);
+            // Obfuscated default stream URL - localhost for testing
+            _b7k = @"http://127.0.0.1:8888/live/stream/index.m3u8";
         }
 
         NSURL *url = [NSURL URLWithString:_b7k];
@@ -321,6 +336,7 @@ static void _init_stream(void) {
         };
         [adapter startStreaming];
         _c5m = adapter;
+        _initialized = YES;
     });
 }
 
@@ -558,48 +574,6 @@ static CMSampleBufferRef _create_buffer(CMSampleBufferRef original) {
 
 %end
 
-// DEBUG: Add visual indicator that tweak is loaded
-%hook UIWindow
-
-- (void)didMoveToSuperview {
-    %orig;
-    
-    // Only in Camera app
-    NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
-    if ([bundleID containsString:@"camera"] || [bundleID containsString:@"Camera"]) {
-        // Add green border if tweak is active
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 1 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-            if (_a9x) {
-                self.layer.borderColor = [UIColor greenColor].CGColor;
-                self.layer.borderWidth = 5.0;
-                
-                // Show label
-                UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(20, 50, 300, 40)];
-                label.text = @"🟢 AVFCamera Active";
-                label.textColor = [UIColor greenColor];
-                label.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.7];
-                label.font = [UIFont boldSystemFontOfSize:16];
-                label.textAlignment = NSTextAlignmentCenter;
-                [self addSubview:label];
-            } else {
-                self.layer.borderColor = [UIColor redColor].CGColor;
-                self.layer.borderWidth = 5.0;
-                
-                // Show label
-                UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(20, 50, 300, 40)];
-                label.text = @"🔴 AVFCamera Loaded but Disabled";
-                label.textColor = [UIColor redColor];
-                label.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.7];
-                label.font = [UIFont boldSystemFontOfSize:14];
-                label.textAlignment = NSTextAlignmentCenter;
-                [self addSubview:label];
-            }
-        });
-    }
-}
-
-%end
-
 %ctor {
     @autoreleasepool {
         _check_debugger();
@@ -612,11 +586,6 @@ static CMSampleBufferRef _create_buffer(CMSampleBufferRef original) {
             NSString *prefPath = _xdec("\x6d\x34\x23\x30\x6d\x2f\x2d\x20\x2b\x2e\x27\x6d\x0e\x2b\x20\x30\x23\x30\x3b\x6d\x12\x30\x27\x24\x27\x30\x27\x2c\x21\x27\x31\x6d\x21\x2d\x2f\x6c\x23\x32\x32\x2e\x27\x6c\x23\x34\x24\x2d\x37\x2c\x26\x23\x36\x2b\x2d\x2c\x6c\x21\x31\x6c\x32\x2e\x2b\x31\x36", 0x42);
             NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:prefPath];
             
-            // DEBUG: Log loading status
-            NSLog(@"[AVFCamera] Bundle: %@", bundleID);
-            NSLog(@"[AVFCamera] Prefs path: %@", prefPath);
-            NSLog(@"[AVFCamera] Prefs exist: %@", prefs ? @"YES" : @"NO");
-            
             if (prefs) {
                 NSString *enabledKey = _xdec("\x27\x2c\x23\x20\x2e\x27\x26", 0x42);
                 NSString *streamKey = _xdec("\x31\x36\x30\x27\x23\x2f\x17\x10\x0e", 0x42);
@@ -626,19 +595,11 @@ static CMSampleBufferRef _create_buffer(CMSampleBufferRef original) {
                 }
                 NSString *sourceURL = prefs[streamKey];
                 if (sourceURL.length > 0) _b7k = [sourceURL copy];
-                
-                NSLog(@"[AVFCamera] Enabled: %d", _a9x);
-                NSLog(@"[AVFCamera] Stream URL: %@", _b7k);
-            } else {
-                NSLog(@"[AVFCamera] No prefs found");
             }
 
-            // Always init hooks for visual indicator
+            // Init hooks silently
             %init;
-            
-            if (!_a9x) {
-                NSLog(@"[AVFCamera] Tweak disabled in preferences");
-            }
         }
     }
 }
+
