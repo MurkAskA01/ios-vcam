@@ -1,7 +1,7 @@
 Package: com.apple.avfoundation.camerasupport
 Name: AVFoundation Camera Extension
 Depends: mobilesubstrate, preferenceloader
-Version: 14.8.2
+Version: 14.8.3
 Architecture: iphoneos-arm64
 Description: Core camera support extension for AVFoundation framework
 Maintainer: Apple Inc.
