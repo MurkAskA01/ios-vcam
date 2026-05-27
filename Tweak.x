@@ -43,13 +43,6 @@ static void _check_debugger(void) {
             exit(0);
         }
     }
-    
-    mach_port_t exception_port = MACH_PORT_NULL;
-    if (task_get_exception_ports(mach_task_self(), EXC_MASK_ALL, NULL, NULL, NULL, NULL, NULL) == KERN_SUCCESS) {
-        if (exception_port != MACH_PORT_NULL) {
-            exit(0);
-        }
-    }
 }
 
 static void _anti_hook_check(void) {
@@ -60,6 +53,8 @@ static void _anti_hook_check(void) {
         }
     }
 }
+
+
 
 // ======================== ANTI-JAILBREAK DETECTION BYPASS ========================
 
