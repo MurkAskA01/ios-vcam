@@ -1,7 +1,3 @@
-
-📄 Исправленный RuntimeProtection.x
-Копируйте этот код и замените в вашем локальном репозитории:
-
 #import <Foundation/Foundation.h>
 #import <dlfcn.h>
 #import <mach-o/dyld.h>
