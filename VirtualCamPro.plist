@@ -9,13 +9,11 @@
             <string>AVCaptureSession</string>
             <string>AVCaptureDevice</string>
             <string>AVCaptureVideoPreviewLayer</string>
+            <string>AVCaptureVideoDataOutput</string>
+            <string>AVCapturePhotoOutput</string>
         </array>
-        <key>Executables</key>
-        <array>
-            <string>Camera</string>
-            <string>MobileSlideShow</string>
-            <string>FaceTime</string>
-        </array>
+        <key>Mode</key>
+        <string>Any</string>
     </dict>
 </dict>
 </plist>
